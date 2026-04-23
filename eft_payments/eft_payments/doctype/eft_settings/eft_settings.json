@@ -1,0 +1,72 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-04-21 14:58:20.861023",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_9cfu",
+  "originator_short_name",
+  "originator_long_name",
+  "originator_id",
+  "data_centre",
+  "file_creation_number"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_9cfu",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "originator_short_name",
+   "fieldtype": "Data",
+   "label": "Originator Short Name"
+  },
+  {
+   "fieldname": "originator_long_name",
+   "fieldtype": "Data",
+   "label": "Originator Long Name"
+  },
+  {
+   "fieldname": "originator_id",
+   "fieldtype": "Data",
+   "label": "Originator ID"
+  },
+  {
+   "fieldname": "data_centre",
+   "fieldtype": "Data",
+   "label": "Data Centre"
+  },
+  {
+   "fieldname": "file_creation_number",
+   "fieldtype": "Int",
+   "label": "File Creation Number"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-04-21 14:59:15.969027",
+ "modified_by": "Administrator",
+ "module": "EFT Payments",
+ "name": "EFT Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

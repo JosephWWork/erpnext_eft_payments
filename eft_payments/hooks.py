@@ -1,9 +1,23 @@
-app_name = "eft_payments"
-app_title = "EFT Payments"
-app_publisher = "Joseph Williams"
-app_description = "Batch EFT/ACH payment runs for Canadian suppliers"
-app_email = "joseph@truckhardware.ca"
-app_license = "mit"
+app_name          = "eft_payments"
+app_title         = "EFT Payments"
+app_publisher     = "Truck Hardware"
+app_description   = "Batch EFT/ACH payment runs for Canadian suppliers"
+app_email         = "joseph@truckhardware.ca"
+app_license       = "mit"
+app_version       = "1.0.0"
+
+doc_events = {
+    "Payment Entry": {
+        "on_cancel": "eft_payments.eft_payments.custom.payment_entry.on_cancel"
+    }
+}
+
+fixtures = [
+    {"dt": "DocType", "filters": [["module", "in", ["Eft Payments"]]]},
+    {"dt": "Custom Field", "filters": [["dt", "in", ["Payment Entry"]]]},
+    {"dt": "Property Setter", "filters": [["doc_type", "in", ["Payment Entry"]]]},
+    {"dt": "Print Format", "filters": [["module", "in", ["Eft Payments"]]]},
+]
 
 # Apps
 # ------------------

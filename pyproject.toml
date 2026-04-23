@@ -1,5 +1,6 @@
 [project]
 name = "eft_payments"
+version = "1.0.0" 
 authors = [
     { name = "Joseph Williams", email = "joseph@truckhardware.ca"}
 ]

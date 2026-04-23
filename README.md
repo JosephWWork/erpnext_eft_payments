@@ -1,33 +1,34 @@
-### EFT Payments
+# EFT Payments
 
-Batch EFT/ACH payment runs for Canadian suppliers
+A Frappe/ERPNext app for processing batch EFT/ACH payment runs for Canadian suppliers via RBC using the CPA 005 file format.
 
-### Installation
+## Features
+- Payment Run Wizard to select outstanding supplier invoices
+- Partial payment support
+- Automatic Payment Entry creation on submission
+- CPA 005 ACH file generation for RBC
+- Remittance advice emails with PDF attachment
 
-You can install this app using the [bench](https://github.com/frappe/bench) CLI:
+## Requirements
+- ERPNext v15
+- Frappe v15
+
+## Installation
 
 ```bash
-cd $PATH_TO_YOUR_BENCH
-bench get-app $URL_OF_THIS_REPO --branch develop
-bench install-app eft_payments
+bench get-app https://github.com/yourcompany/eft_payments
+bench --site your-site install-app eft_payments
+bench --site your-site migrate
 ```
 
-### Contributing
+## Setup
+1. Go to **EFT Settings** and fill in your RBC Originator ID, short/long name and processing centre
+2. Ensure suppliers have Bank Accounts linked with branch code and institution number
+3. Open **Payment Run Wizard** from the search bar
 
-This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
-
-```bash
-cd apps/eft_payments
-pre-commit install
-```
-
-Pre-commit is configured to use the following tools for checking and formatting your code:
-
-- ruff
-- eslint
-- prettier
-- pyupgrade
-
-### License
-
-mit
+## Usage
+1. Open Payment Run Wizard, select invoices, set amounts
+2. Create Payment Run → opens the draft
+3. Click Submit → creates Payment Entries + generates ACH file
+4. Upload ACH file to RBC
+5. Click Actions → Send Remittance Emails
