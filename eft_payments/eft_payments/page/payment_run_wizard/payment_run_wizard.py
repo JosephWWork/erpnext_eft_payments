@@ -351,6 +351,7 @@ def _generate_ach_file(payment_run_name):
         fcn = 1
     frappe.db.set_value("EFT Settings", "EFT Settings", "file_creation_number", fcn)
     # fcn = 0  # unused while testing
+    # fcn_str         = str(fcn).zfill(4)
     # fcn_str = "TEST"
 
     payment_entries = frappe.get_all(
@@ -370,8 +371,7 @@ def _generate_ach_file(payment_run_name):
     orig_short_name = (settings.originator_short_name or "").strip().upper().ljust(15)[:15]
     orig_long_name  = (settings.originator_long_name or "").strip().ljust(30)[:30]
     data_centre     = (settings.data_centre or "").strip().zfill(5)[:5]  # N, zero filled
-    fcn_str         = str(fcn).zfill(4)
-
+    
     lines              = []
     total_amount_cents = 0
     record_count       = 0   # counts C records (one per payment)
@@ -454,6 +454,8 @@ def _generate_ach_file(payment_run_name):
         routing        = supplier_bank["routing"]   # bank(4) + transit(5) = 9 digits
         account_number = (supplier_bank["account_number"] or "").strip().ljust(12)[:12]
         amount_str     = str(amount_cents).zfill(10)
+        return_fi      = (settings.return_fi_number or "").strip().zfill(9)[:9]
+        return_account = (settings.return_account or "").strip().ljust(12)[:12]
 
         segment_one = (
             "460"             # field 05: transaction code (3) AN
@@ -467,13 +469,13 @@ def _generate_ach_file(payment_run_name):
             + payee_name      # field 13: customer name (30) AN
             + orig_long_name  # field 14: client name (30) AN
             + originator_id   # field 15: client number (10) AN
-            + " " * 19        # field 16: customer number (19) AN — blank
-            + "0" * 9         # field 17: reserved (9) N — zero fill
-            + " " * 12        # field 18: reserved (12) AN — blank
-            + " " * 15        # field 19: client sundry info (15) AN — blank
-            + " " * 22        # field 20: reserved (22) AN — blank
-            + " " * 2         # field 21: reserved (2) AN — blank
-            + " " * 11        # field 22: reserved (11) AN — blank
+            + (pe["party"] or "").strip().ljust(19)[:19]  # field 16: customer number (19) AN — supplier ID 
+            + return_fi        # field 20: return FI (9) N
+            + return_account   # field 21: return account (12) AN
+            + "0" * 15         # field 22: sundry info (15) — zeros per working example
+            + " " * 22         # field 23: stored trace number (22) AN — blank
+            + " " * 2          # field 24: settlement code (2) AN — blank
+            + "0" * 11         # field 25: invalid data element (11) N — all zeros
         )
         assert len(segment_one) == SEGMENT_SIZE, \
             f"Segment one length {len(segment_one)} != {SEGMENT_SIZE}"
@@ -511,7 +513,11 @@ def _generate_ach_file(payment_run_name):
         + "0" * 8                                   # field 06 reserved (8)
         + str(total_amount_cents).zfill(14)         # field 07 total amount (14)
         + str(record_count).zfill(8)                # field 08 credit count (8)
-        + " " * 1396                                # field 09 filler (1396)
+        + "0" * 14                                   # field 09: value of err corr E (14) — zero
+        + "0" * 8                                    # field 10: number of err corr E (8) — zero
+        + "0" * 14                                   # field 11: value of err corr F (14) — zero
+        + "0" * 8                                    # field 12: number of err corr F (8) — zero
+        + " " * 1352                                 # field 13: filler blank (1352)                               # field 09 filler (1396)
     )
     assert len(z_record) == 1464, f"Z record length {len(z_record)} != 1464"
     lines.append(z_record)

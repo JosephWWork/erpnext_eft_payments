@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "creation": "2026-04-21 14:58:20.861023",
+ "creation": "2026-05-06 09:32:53.852687",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
@@ -10,7 +10,9 @@
   "originator_long_name",
   "originator_id",
   "data_centre",
-  "file_creation_number"
+  "file_creation_number",
+  "return_fi_number",
+  "return_account"
  ],
  "fields": [
   {
@@ -41,13 +43,23 @@
    "fieldname": "file_creation_number",
    "fieldtype": "Int",
    "label": "File Creation Number"
+  },
+  {
+   "fieldname": "return_fi_number",
+   "fieldtype": "Data",
+   "label": "Return FI Number"
+  },
+  {
+   "fieldname": "return_account",
+   "fieldtype": "Data",
+   "label": "Return Account"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-04-21 14:59:15.969027",
+ "modified": "2026-05-06 09:33:26.215994",
  "modified_by": "Administrator",
  "module": "EFT Payments",
  "name": "EFT Settings",
