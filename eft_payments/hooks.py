@@ -19,12 +19,6 @@ fixtures = [
     {"dt": "Print Format", "filters": [["module", "in", ["Eft Payments"]]]},
 ]
 
-app_include_js = []
-
-doctype_js = {
-    "Payment Run": "eft_payments/eft_payments/doctype/payment_run/payment_run.js"
-}
-
 # Apps
 # ------------------
 
