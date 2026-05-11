@@ -17,6 +17,7 @@ fixtures = [
     {"dt": "Custom Field", "filters": [["dt", "in", ["Payment Entry"]]]},
     {"dt": "Property Setter", "filters": [["doc_type", "in", ["Payment Entry"]]]},
     {"dt": "Print Format", "filters": [["module", "in", ["Eft Payments"]]]},
+    {"dt": "Client Script", "filters": [["dt", "in", ["Payment Run"]]]},
 ]
 
 doctype_js = {
