@@ -5,15 +5,19 @@ from collections import defaultdict
 from erpnext.accounts.doctype.payment_entry.payment_entry import (
     get_outstanding_reference_documents,
     get_reference_details,
+    get_outstanding_on_journal_entry,
 )
 
 
 @frappe.whitelist()
 def get_outstanding_invoices(company=None, from_date=None, to_date=None):
     """
-    Outstanding payables for every supplier in the company — Purchase Invoices
-    *and* Journal Entries credited to a payable account — via ERPNext's own
-    reconciliation helper, so this matches what Accounts Payable reports show.
+    Outstanding payables for every supplier in the company — Purchase Invoices,
+    Journal Entries credited to a payable account, *and* any credit against
+    the supplier (a debit/credit note or a credit Journal Entry) — via
+    ERPNext's own reconciliation helper, so this matches what Accounts
+    Payable reports show. Credits come back with a negative outstanding_amount
+    so they can be applied against what's being paid.
     """
     if not company:
         frappe.throw(_("Please select a Company."))
@@ -45,6 +49,14 @@ def get_outstanding_invoices(company=None, from_date=None, to_date=None):
             "to_posting_date": to_date,
         }, validate=True) or []
 
+        # ERPNext's helper only looks for negative-outstanding *Purchase
+        # Invoices* (debit/credit notes) — it never returns a Journal Entry
+        # with a credit balance, even though that's a real credit against the
+        # supplier and shows up in Accounts Payable. Find those ourselves.
+        docs = list(docs) + get_negative_outstanding_journal_entries(
+            supplier, party_account, company
+        )
+
         if not docs:
             continue
 
@@ -63,7 +75,7 @@ def get_outstanding_invoices(company=None, from_date=None, to_date=None):
 
         for d in docs:
             outstanding = float(d.get("outstanding_amount") or 0)
-            if outstanding <= 0:
+            if abs(outstanding) <= 0.005:
                 continue
 
             entry["invoice_count"] += 1
@@ -83,11 +95,93 @@ def get_outstanding_invoices(company=None, from_date=None, to_date=None):
     return list(supplier_map.values())
 
 
+def get_negative_outstanding_journal_entries(party, party_account, company):
+    """
+    ERPNext's get_outstanding_reference_documents() doesn't return Journal
+    Entries with a credit balance (its negative-outstanding lookup is
+    hardcoded to Purchase Invoice) — so find candidate JEs from the Payment
+    Ledger Entry ourselves, then get the authoritative outstanding amount for
+    each from the same helper ERPNext uses when a JE is actually applied as a
+    Payment Entry reference, so the two stay consistent.
+    """
+    candidates = frappe.db.sql("""
+        SELECT against_voucher_no AS voucher_no
+        FROM `tabPayment Ledger Entry`
+        WHERE party_type = 'Supplier'
+          AND party = %(party)s
+          AND account = %(account)s
+          AND account_type = 'Payable'
+          AND voucher_type = 'Journal Entry'
+          AND against_voucher_type = 'Journal Entry'
+          AND company = %(company)s
+          AND delinked = 0
+        GROUP BY against_voucher_no
+        HAVING SUM(amount_in_account_currency) < -0.005
+    """, {"party": party, "account": party_account, "company": company}, as_dict=True)
+
+    results = []
+    for c in candidates:
+        voucher_no = c["voucher_no"]
+        outstanding_amount, total_amount = get_outstanding_on_journal_entry(
+            voucher_no, "Supplier", party
+        )
+        outstanding_amount = float(outstanding_amount or 0)
+        if outstanding_amount >= -0.005:
+            continue
+
+        je = frappe.db.get_value(
+            "Journal Entry", voucher_no, ["posting_date", "due_date"], as_dict=True
+        )
+        results.append({
+            "voucher_no":         voucher_no,
+            "voucher_type":       "Journal Entry",
+            "posting_date":       je.posting_date if je else None,
+            "due_date":           je.due_date if je else None,
+            "invoice_amount":     float(total_amount or 0),
+            "outstanding_amount": outstanding_amount,
+            "currency":           None,
+        })
+
+    return results
+
+
 @frappe.whitelist()
 def create_payment_run(company, bank_account, payment_date, selected_invoices):
     import json
     if isinstance(selected_invoices, str):
         selected_invoices = json.loads(selected_invoices)
+
+    # Validate and group by supplier first — a credit that fully offsets (or
+    # exceeds) one supplier's selected invoices should exclude just that
+    # supplier from the run, not fail the whole request.
+    by_supplier = defaultdict(list)
+    for inv in selected_invoices:
+        outstanding = float(inv.get("outstanding_amount") or 0)
+        raw_amount = inv.get("pay_amount")
+        amount = float(raw_amount) if raw_amount not in (None, "") else outstanding
+
+        if outstanding == 0 or amount == 0:
+            continue
+
+        # A credit row (negative outstanding) must be applied as a negative
+        # amount, and vice versa — no inventing a positive payment from a
+        # credit or a negative one from an invoice.
+        if (outstanding > 0) != (amount > 0):
+            frappe.throw(_(
+                "Invalid pay amount for {0}: it must be applied in the same "
+                "direction as its outstanding balance."
+            ).format(inv.get("name")))
+
+        if abs(amount) > abs(outstanding) + 0.005:
+            frappe.throw(_(
+                "Pay amount for {0} exceeds its outstanding balance."
+            ).format(inv.get("name")))
+
+        by_supplier[inv["supplier"]].append({
+            "reference_type": inv.get("reference_type") or "Purchase Invoice",
+            "reference_name": inv["name"],
+            "amount":         amount,
+        })
 
     pr = frappe.new_doc("Payment Run")
     pr.company = company
@@ -96,28 +190,39 @@ def create_payment_run(company, bank_account, payment_date, selected_invoices):
     pr.status = "Draft"
 
     total = 0
-    for inv in selected_invoices:
-        # Use pay_amount if specified, fall back to outstanding_amount
-        amount = float(inv.get("pay_amount") or inv.get("outstanding_amount") or 0)
-        if amount <= 0:
+    skipped_suppliers = []
+
+    for supplier, items in by_supplier.items():
+        supplier_total = sum(i["amount"] for i in items)
+        if supplier_total <= 0.005:
+            skipped_suppliers.append(supplier)
             continue
 
-        pr.append("items", {
-            "reference_type": inv.get("reference_type") or "Purchase Invoice",
-            "reference_name": inv["name"],
-            "supplier":       inv["supplier"],
-            "amount":         amount
-        })
-        total += amount
+        for item in items:
+            pr.append("items", {
+                "reference_type": item["reference_type"],
+                "reference_name": item["reference_name"],
+                "supplier":       supplier,
+                "amount":         item["amount"]
+            })
+            total += item["amount"]
 
     if not pr.items:
-        frappe.throw("No valid invoice amounts to process.")
+        if skipped_suppliers:
+            frappe.throw(_(
+                "No suppliers to pay: the selected credits fully offset (or "
+                "exceeded) the invoices chosen for {0}."
+            ).format(", ".join(skipped_suppliers)))
+        frappe.throw(_("No valid invoice amounts to process."))
 
     pr.total_amount = total
     pr.insert()
     frappe.db.commit()
 
-    return pr.name
+    return {
+        "name": pr.name,
+        "skipped_suppliers": skipped_suppliers,
+    }
 
 # @frappe.whitelist()
 # def submit_payment_run(payment_run_name):
@@ -289,6 +394,12 @@ def _create_payment_entries(pr):
             ) or company_currency
 
             total_amount = sum(float(i.amount) for i in items)
+            if total_amount <= 0:
+                frappe.throw(_(
+                    "Net amount for supplier {0} is {1} — a credit applied against "
+                    "this supplier's invoices must not bring the total to zero or "
+                    "below. Adjust the Payment Run items before submitting."
+                ).format(supplier, total_amount))
 
             pe = frappe.new_doc("Payment Entry")
             pe.payment_type             = "Pay"

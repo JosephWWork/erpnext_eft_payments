@@ -61,7 +61,15 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
 
     // ── Helpers ───────────────────────────────────────────────────
     function fmt(amount) {
-        return '$ ' + parseFloat(amount || 0).toFixed(2);
+        amount = parseFloat(amount || 0);
+        let sign = amount < 0 ? '-' : '';
+        return sign + '$ ' + Math.abs(amount).toFixed(2);
+    }
+
+    // A credit (debit/credit note or credit Journal Entry) carries a
+    // negative outstanding_amount and nets *against* what's paid.
+    function is_credit(inv) {
+        return parseFloat(inv.outstanding_amount) < 0;
     }
 
     function encode_inv(inv) {
@@ -159,6 +167,12 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
                 let encoded = encode_inv(inv);
                 let overdue = is_overdue(inv.due_date);
                 let is_je   = inv.reference_type === 'Journal Entry';
+                let credit  = is_credit(inv);
+                let amount  = parseFloat(inv.outstanding_amount);
+                // Invoice: pay between $0.01 and the full outstanding amount.
+                // Credit:  apply between the full (negative) credit and -$0.01.
+                let floor   = credit ? amount : 0.01;
+                let ceiling = credit ? -0.01 : amount;
                 rows += `
                     <tr class="invoice-row" data-supplier="${s.supplier}" data-invoice="${inv_key(inv)}">
                         <td style="width:40px; text-align:center;">
@@ -170,6 +184,7 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
                         <td style="padding-left:30px;">
                             <a href="${doc_route(inv)}" target="_blank">${inv.name}</a>
                             ${is_je ? '<span class="badge" style="background:#e8e8f8; color:#4a4a8a; margin-left:6px; font-size:10px;">JE</span>' : ''}
+                            ${credit ? '<span class="badge" style="background:#fdeaea; color:#c0392b; margin-left:6px; font-size:10px;">CREDIT</span>' : ''}
                         </td>
                         <td style="text-align:center; color:#888; font-size:12px;">
                             ${frappe.datetime.str_to_user(inv.posting_date)}
@@ -181,7 +196,7 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
                         <td style="text-align:right; color:#888; font-size:12px;">
                             ${fmt(inv.grand_total)}
                         </td>
-                        <td style="text-align:right; color:#888; font-size:12px;">
+                        <td style="text-align:right; color:${credit ? '#c0392b' : '#888'}; font-size:12px;">
                             ${fmt(inv.outstanding_amount)}
                         </td>
                         <td style="text-align:right;">
@@ -190,16 +205,16 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
                                        class="form-control pay-amount-input"
                                        data-invoice="${inv_key(inv)}"
                                        data-supplier="${s.supplier}"
-                                       data-max="${inv.outstanding_amount}"
+                                       data-full="${amount}"
                                        data-inv="${encoded}"
-                                       value="${inv.outstanding_amount}"
-                                       min="0.01"
-                                       max="${inv.outstanding_amount}"
+                                       value="${amount}"
+                                       min="${floor}"
+                                       max="${ceiling}"
                                        step="0.01"
                                        style="width:110px; text-align:right; font-size:12px; display:none;" />
                                 <span class="pay-amount-display"
                                       data-invoice="${inv_key(inv)}"
-                                      style="font-weight:600;">
+                                      style="font-weight:600; ${credit ? 'color:#c0392b;' : ''}">
                                     ${fmt(inv.outstanding_amount)}
                                 </span>
                             </div>
@@ -303,11 +318,18 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
         $body.find('.pay-amount-input').on('input change', function() {
             let invoice_key  = $(this).data('invoice');
             let supplier     = $(this).data('supplier');
-            let max          = parseFloat($(this).data('max'));
+            let full         = parseFloat($(this).data('full'));
+            let credit       = full < 0;
             let val          = parseFloat($(this).val()) || 0;
 
-            if (val > max) { val = max; $(this).val(max); }
-            if (val < 0)   { val = 0;   $(this).val(0); }
+            // Credit rows range [full, 0); invoice rows range (0, full].
+            if (credit) {
+                if (val > 0)    { val = 0;    $(this).val(0); }
+                if (val < full) { val = full; $(this).val(full); }
+            } else {
+                if (val > full) { val = full; $(this).val(full); }
+                if (val < 0)    { val = 0;    $(this).val(0); }
+            }
 
             if (selected_invoices[invoice_key]) {
                 selected_invoices[invoice_key].pay_amount = val;
@@ -317,15 +339,16 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
             update_footer();
         });
 
-        // Full button
+        // Full button — applies the full outstanding amount, or the full
+        // credit, per row.
         $body.find('.btn-pay-full').on('click', function(e) {
             e.stopPropagation();
             let supplier = $(this).data('supplier');
             $body.find(`.pay-amount-input[data-supplier="${supplier}"]`).each(function() {
-                let max = parseFloat($(this).data('max'));
-                $(this).val(max);
+                let full = parseFloat($(this).data('full'));
+                $(this).val(full);
                 let inv_key_val = $(this).data('invoice');
-                if (selected_invoices[inv_key_val]) selected_invoices[inv_key_val].pay_amount = max;
+                if (selected_invoices[inv_key_val]) selected_invoices[inv_key_val].pay_amount = full;
             });
             update_supplier_total(supplier);
             update_footer();
@@ -398,7 +421,12 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
             ) || 0;
         });
         let $span = $body.find(`.supplier-selected-total[data-supplier="${supplier}"]`);
-        $span.html(subtotal > 0 ? `Paying: <strong>${fmt(subtotal)}</strong> &mdash; ` : '');
+        if (subtotal === 0) {
+            $span.html('');
+        } else {
+            let color = subtotal < 0 ? '#c0392b' : '#888';
+            $span.html(`<span style="color:${color};">Net: <strong>${fmt(subtotal)}</strong></span> &mdash; `);
+        }
     }
 
     function update_all_supplier_totals() {
@@ -413,23 +441,44 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
             return;
         }
 
-        let zero_amounts = items.filter(i => !i.pay_amount || i.pay_amount <= 0);
+        // Note: a credit's pay_amount is legitimately negative — only an
+        // unset/exact-zero amount counts as "zero" here.
+        let zero_amounts = items.filter(i => !i.pay_amount);
         let total        = items.reduce((sum, i) => sum + (parseFloat(i.pay_amount) || 0), 0);
         let suppliers    = new Set(items.map(i => i.supplier)).size;
 
-        let warning = zero_amounts.length
-            ? `<div style="color:#c0392b; font-size:12px; margin-top:4px;">
-                 ⚠ ${zero_amounts.length} invoice(s) have a $0 pay amount —
+        // A credit can offset invoices for the same supplier, but the net
+        // still has to be positive — there's no such thing as a negative EFT.
+        let supplier_totals = {};
+        items.forEach(i => {
+            supplier_totals[i.supplier] = (supplier_totals[i.supplier] || 0) + (parseFloat(i.pay_amount) || 0);
+        });
+        let negative_suppliers = Object.keys(supplier_totals).filter(s => supplier_totals[s] <= 0.005);
+
+        let warning = '';
+        if (zero_amounts.length) {
+            warning += `<div style="color:#c0392b; font-size:12px; margin-top:4px;">
+                 ⚠ ${zero_amounts.length} row(s) have a $0 pay amount —
                  update or deselect before proceeding.
-               </div>`
-            : '';
+               </div>`;
+        }
+        if (negative_suppliers.length) {
+            let names = negative_suppliers.map(code => {
+                let s = all_supplier_data.find(x => x.supplier === code);
+                return s ? s.supplier_name : code;
+            });
+            warning += `<div style="color:#c0392b; font-size:12px; margin-top:4px;">
+                 ⚠ Credit applied fully offsets (or exceeds) the invoices selected for
+                 <b>${names.join(', ')}</b> — net must be greater than $0.
+               </div>`;
+        }
 
         $body.find('.selected-summary').html(`
-            ${suppliers} supplier(s) &mdash; ${items.length} invoice(s) selected &mdash;
+            ${suppliers} supplier(s) &mdash; ${items.length} row(s) selected &mdash;
             Total: <strong>${fmt(total)}</strong>
             ${warning}
         `);
-        $body.find('.btn-create-run').prop('disabled', zero_amounts.length > 0);
+        $body.find('.btn-create-run').prop('disabled', zero_amounts.length > 0 || negative_suppliers.length > 0);
         $body.find('.payment-run-footer').show();
     }
 
@@ -470,12 +519,30 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
                         selected_invoices: JSON.stringify(items)
                     },
                     callback: function(r) {
-                        if (r.message) {
+                        if (!r.message) return;
+
+                        let skipped = r.message.skipped_suppliers || [];
+                        if (skipped.length) {
+                            let names = skipped.map(code => {
+                                let s = all_supplier_data.find(x => x.supplier === code);
+                                return s ? s.supplier_name : code;
+                            });
+                            frappe.msgprint({
+                                title: 'Some suppliers were skipped',
+                                indicator: 'orange',
+                                message: `The credit applied fully offset (or exceeded) the invoices
+                                    selected for <b>${names.join(', ')}</b> — nothing was created
+                                    for ${names.length > 1 ? 'them' : 'that supplier'}. Adjust the
+                                    invoices or credit amount and try again.`
+                            });
+                        }
+
+                        if (r.message.name) {
                             frappe.show_alert({
-                                message: `Payment Run ${r.message} created!`,
+                                message: `Payment Run ${r.message.name} created!`,
                                 indicator: 'green'
                             });
-                            frappe.set_route('Form', 'Payment Run', r.message);
+                            frappe.set_route('Form', 'Payment Run', r.message.name);
                         }
                     }
                 });
