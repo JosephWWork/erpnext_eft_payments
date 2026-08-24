@@ -72,6 +72,16 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
         return JSON.parse(decodeURIComponent($el.attr('data-inv')));
     }
 
+    // Composite key — reference_type + name — since the list now mixes
+    // Purchase Invoices and Journal Entries, which don't share a name space.
+    function inv_key(inv) {
+        return (inv.reference_type || 'Purchase Invoice') + '::' + inv.name;
+    }
+
+    function doc_route(inv) {
+        return `/app/${frappe.router.slug(inv.reference_type || 'Purchase Invoice')}/${inv.name}`;
+    }
+
     function is_overdue(due_date) {
         if (!due_date) return false;
         return frappe.datetime.str_to_obj(due_date) < frappe.datetime.str_to_obj(frappe.datetime.get_today());
@@ -148,8 +158,9 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
             s.invoices.forEach(inv => {
                 let encoded = encode_inv(inv);
                 let overdue = is_overdue(inv.due_date);
+                let is_je   = inv.reference_type === 'Journal Entry';
                 rows += `
-                    <tr class="invoice-row" data-supplier="${s.supplier}" data-invoice="${inv.name}">
+                    <tr class="invoice-row" data-supplier="${s.supplier}" data-invoice="${inv_key(inv)}">
                         <td style="width:40px; text-align:center;">
                             <input type="checkbox"
                                    class="inv-checkbox"
@@ -157,7 +168,8 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
                                    data-inv="${encoded}" />
                         </td>
                         <td style="padding-left:30px;">
-                            <a href="/app/purchase-invoice/${inv.name}" target="_blank">${inv.name}</a>
+                            <a href="${doc_route(inv)}" target="_blank">${inv.name}</a>
+                            ${is_je ? '<span class="badge" style="background:#e8e8f8; color:#4a4a8a; margin-left:6px; font-size:10px;">JE</span>' : ''}
                         </td>
                         <td style="text-align:center; color:#888; font-size:12px;">
                             ${frappe.datetime.str_to_user(inv.posting_date)}
@@ -176,7 +188,7 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
                             <div style="display:flex; align-items:center; justify-content:flex-end; gap:6px;">
                                 <input type="number"
                                        class="form-control pay-amount-input"
-                                       data-invoice="${inv.name}"
+                                       data-invoice="${inv_key(inv)}"
                                        data-supplier="${s.supplier}"
                                        data-max="${inv.outstanding_amount}"
                                        data-inv="${encoded}"
@@ -186,7 +198,7 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
                                        step="0.01"
                                        style="width:110px; text-align:right; font-size:12px; display:none;" />
                                 <span class="pay-amount-display"
-                                      data-invoice="${inv.name}"
+                                      data-invoice="${inv_key(inv)}"
                                       style="font-weight:600;">
                                     ${fmt(inv.outstanding_amount)}
                                 </span>
@@ -246,7 +258,7 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
             // Show/hide all inputs
             $body.find('.inv-checkbox').each(function() {
                 let inv = decode_inv($(this));
-                show_input(inv.name, checked);
+                show_input(inv_key(inv), checked);
             });
             update_all_supplier_totals();
             update_footer();
@@ -260,7 +272,7 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
                 $(this).prop('checked', checked);
                 toggle_invoice($(this), checked);
                 let inv = decode_inv($(this));
-                show_input(inv.name, checked);
+                show_input(inv_key(inv), checked);
             });
             update_supplier_total(supplier);
             sync_select_all();
@@ -274,11 +286,11 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
             let inv      = decode_inv($(this));
 
             toggle_invoice($(this), checked);
-            show_input(inv.name, checked);
+            show_input(inv_key(inv), checked);
 
             if (!checked) {
                 // Reset input to full outstanding when unchecked
-                $body.find(`.pay-amount-input[data-invoice="${inv.name}"]`).val(inv.outstanding_amount);
+                $body.find(`.pay-amount-input[data-invoice="${inv_key(inv)}"]`).val(inv.outstanding_amount);
             }
 
             sync_supplier_checkbox(supplier);
@@ -289,7 +301,7 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
 
         // Pay amount input
         $body.find('.pay-amount-input').on('input change', function() {
-            let invoice_name = $(this).data('invoice');
+            let invoice_key  = $(this).data('invoice');
             let supplier     = $(this).data('supplier');
             let max          = parseFloat($(this).data('max'));
             let val          = parseFloat($(this).val()) || 0;
@@ -297,8 +309,8 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
             if (val > max) { val = max; $(this).val(max); }
             if (val < 0)   { val = 0;   $(this).val(0); }
 
-            if (selected_invoices[invoice_name]) {
-                selected_invoices[invoice_name].pay_amount = val;
+            if (selected_invoices[invoice_key]) {
+                selected_invoices[invoice_key].pay_amount = val;
             }
 
             update_supplier_total(supplier);
@@ -312,8 +324,8 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
             $body.find(`.pay-amount-input[data-supplier="${supplier}"]`).each(function() {
                 let max = parseFloat($(this).data('max'));
                 $(this).val(max);
-                let inv_name = $(this).data('invoice');
-                if (selected_invoices[inv_name]) selected_invoices[inv_name].pay_amount = max;
+                let inv_key_val = $(this).data('invoice');
+                if (selected_invoices[inv_key_val]) selected_invoices[inv_key_val].pay_amount = max;
             });
             update_supplier_total(supplier);
             update_footer();
@@ -325,8 +337,8 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
             let supplier = $(this).data('supplier');
             $body.find(`.pay-amount-input[data-supplier="${supplier}"]`).each(function() {
                 $(this).val('');
-                let inv_name = $(this).data('invoice');
-                if (selected_invoices[inv_name]) selected_invoices[inv_name].pay_amount = 0;
+                let inv_key_val = $(this).data('invoice');
+                if (selected_invoices[inv_key_val]) selected_invoices[inv_key_val].pay_amount = 0;
             });
             update_supplier_total(supplier);
             update_footer();
@@ -349,13 +361,14 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
     // ── Toggle invoice in selected set ────────────────────────────
     function toggle_invoice($cb, checked) {
         let inv = decode_inv($cb);
+        let key = inv_key(inv);
         if (checked) {
             let current_pay = parseFloat(
-                $body.find(`.pay-amount-input[data-invoice="${inv.name}"]`).val()
+                $body.find(`.pay-amount-input[data-invoice="${key}"]`).val()
             ) || parseFloat(inv.outstanding_amount);
-            selected_invoices[inv.name] = Object.assign({}, inv, { pay_amount: current_pay });
+            selected_invoices[key] = Object.assign({}, inv, { pay_amount: current_pay });
         } else {
-            delete selected_invoices[inv.name];
+            delete selected_invoices[key];
         }
     }
 
@@ -379,9 +392,9 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
     function update_supplier_total(supplier) {
         let subtotal = 0;
         $body.find(`.inv-checkbox[data-supplier="${supplier}"]:checked`).each(function() {
-            let inv_name = decode_inv($(this)).name;
+            let key = inv_key(decode_inv($(this)));
             subtotal += parseFloat(
-                $body.find(`.pay-amount-input[data-invoice="${inv_name}"]`).val()
+                $body.find(`.pay-amount-input[data-invoice="${key}"]`).val()
             ) || 0;
         });
         let $span = $body.find(`.supplier-selected-total[data-supplier="${supplier}"]`);
@@ -436,7 +449,7 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
         // Final sync of pay_amount from inputs
         items.forEach(inv => {
             let val = parseFloat(
-                $body.find(`.pay-amount-input[data-invoice="${inv.name}"]`).val()
+                $body.find(`.pay-amount-input[data-invoice="${inv_key(inv)}"]`).val()
             );
             if (!isNaN(val)) inv.pay_amount = val;
         });

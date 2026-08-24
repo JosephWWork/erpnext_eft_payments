@@ -18,13 +18,9 @@ fixtures = [
     {"dt": "Print Format", "filters": [["module", "in", ["Eft Payments"]]]},
 ]
 
-doctype_js = {
-    "Payment Run": "public/js/payment_run.js"
-}
-
-page_js = {
-    "payment-run-wizard": "public/js/payment_run_wizard.js"
-}
+# Payment Run and Payment Run Wizard client scripts live at their standard
+# locations (doctype/page.js) and are bundled automatically — no doctype_js/
+# page_js hook needed for our own app's own doctype/page.
 
 # Apps
 # ------------------

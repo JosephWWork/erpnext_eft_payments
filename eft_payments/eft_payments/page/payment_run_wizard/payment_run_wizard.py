@@ -2,49 +2,83 @@ import frappe
 from frappe import _
 from collections import defaultdict
 
+from erpnext.accounts.doctype.payment_entry.payment_entry import (
+    get_outstanding_reference_documents,
+    get_reference_details,
+)
+
 
 @frappe.whitelist()
 def get_outstanding_invoices(company=None, from_date=None, to_date=None):
-    filters = {
-        "docstatus": 1,
-        "outstanding_amount": [">", 0],
-    }
-    if company:
-        filters["company"] = company
-    if from_date and to_date:
-        filters["posting_date"] = ["between", [from_date, to_date]]
-    elif from_date:
-        filters["posting_date"] = [">=", from_date]
-    elif to_date:
-        filters["posting_date"] = ["<=", to_date]
+    """
+    Outstanding payables for every supplier in the company — Purchase Invoices
+    *and* Journal Entries credited to a payable account — via ERPNext's own
+    reconciliation helper, so this matches what Accounts Payable reports show.
+    """
+    if not company:
+        frappe.throw(_("Please select a Company."))
 
-    invoices = frappe.get_all(
-        "Purchase Invoice",
-        filters=filters,
-        fields=[
-            "name", "supplier", "supplier_name", "posting_date",
-            "due_date", "grand_total", "outstanding_amount", "currency"
-        ],
-        order_by="supplier asc, due_date asc"
-    )
+    suppliers_with_balance = frappe.db.sql("""
+        SELECT party
+        FROM `tabPayment Ledger Entry`
+        WHERE party_type = 'Supplier'
+          AND account_type = 'Payable'
+          AND company = %s
+          AND delinked = 0
+        GROUP BY party
+        HAVING ABS(SUM(amount_in_account_currency)) > 0.005
+    """, company, as_dict=True)
 
-    supplier_map = defaultdict(lambda: {
-        "supplier": "",
-        "supplier_name": "",
-        "currency": "",
-        "invoice_count": 0,
-        "total_outstanding": 0.0,
-        "invoices": []
-    })
+    supplier_map = {}
 
-    for inv in invoices:
-        s = supplier_map[inv["supplier"]]
-        s["supplier"] = inv["supplier"]
-        s["supplier_name"] = inv["supplier_name"]
-        s["currency"] = inv["currency"]
-        s["invoice_count"] += 1
-        s["total_outstanding"] += float(inv["outstanding_amount"])
-        s["invoices"].append(inv)
+    for row in suppliers_with_balance:
+        supplier = row["party"]
+        party_account = get_party_account(supplier, company)
+
+        docs = get_outstanding_reference_documents({
+            "party_type": "Supplier",
+            "party": supplier,
+            "party_account": party_account,
+            "company": company,
+            "get_outstanding_invoices": True,
+            "from_posting_date": from_date,
+            "to_posting_date": to_date,
+        }, validate=True) or []
+
+        if not docs:
+            continue
+
+        supplier_name, default_currency = frappe.db.get_value(
+            "Supplier", supplier, ["supplier_name", "default_currency"]
+        )
+
+        entry = supplier_map.setdefault(supplier, {
+            "supplier": supplier,
+            "supplier_name": supplier_name,
+            "currency": default_currency,
+            "invoice_count": 0,
+            "total_outstanding": 0.0,
+            "invoices": []
+        })
+
+        for d in docs:
+            outstanding = float(d.get("outstanding_amount") or 0)
+            if outstanding <= 0:
+                continue
+
+            entry["invoice_count"] += 1
+            entry["total_outstanding"] += outstanding
+            entry["invoices"].append({
+                "name":               d.get("voucher_no"),
+                "reference_type":     d.get("voucher_type"),
+                "supplier":           supplier,
+                "supplier_name":      supplier_name,
+                "posting_date":       d.get("posting_date"),
+                "due_date":           d.get("due_date"),
+                "grand_total":        float(d.get("invoice_amount") or 0),
+                "outstanding_amount": outstanding,
+                "currency":           d.get("currency") or entry["currency"],
+            })
 
     return list(supplier_map.values())
 
@@ -69,7 +103,7 @@ def create_payment_run(company, bank_account, payment_date, selected_invoices):
             continue
 
         pr.append("items", {
-            "reference_type": "Purchase Invoice",
+            "reference_type": inv.get("reference_type") or "Purchase Invoice",
             "reference_name": inv["name"],
             "supplier":       inv["supplier"],
             "amount":         amount
@@ -236,11 +270,11 @@ def _create_payment_entries(pr):
     # Group items by supplier
     supplier_invoices = defaultdict(list)
     for item in pr.items:
-        if item.reference_type == "Purchase Invoice":
+        if item.reference_type in ("Purchase Invoice", "Journal Entry"):
             supplier_invoices[item.supplier].append(item)
 
     if not supplier_invoices:
-        frappe.throw(_("No Purchase Invoice items found in this Payment Run."))
+        frappe.throw(_("No valid Purchase Invoice or Journal Entry items found in this Payment Run."))
 
     for supplier, items in supplier_invoices.items():
         try:
@@ -282,13 +316,16 @@ def _create_payment_entries(pr):
             pe.payment_run              = pr.name
 
             for item in items:
-                inv = frappe.get_doc("Purchase Invoice", item.reference_name)
+                ref_details = get_reference_details(
+                    item.reference_type, item.reference_name, paid_to_currency,
+                    party_type="Supplier", party=supplier
+                )
                 pe.append("references", {
-                    "reference_doctype":  "Purchase Invoice",
+                    "reference_doctype":  item.reference_type,
                     "reference_name":     item.reference_name,
-                    "due_date":           inv.due_date,
-                    "total_amount":       inv.grand_total,
-                    "outstanding_amount": inv.outstanding_amount,
+                    "due_date":           ref_details.due_date,
+                    "total_amount":       ref_details.total_amount,
+                    "outstanding_amount": ref_details.outstanding_amount,
                     "allocated_amount":   float(item.amount),
                 })
 
