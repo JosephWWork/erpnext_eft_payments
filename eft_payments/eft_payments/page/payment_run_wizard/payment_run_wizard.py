@@ -10,7 +10,7 @@ from erpnext.accounts.doctype.payment_entry.payment_entry import (
 
 
 @frappe.whitelist()
-def get_outstanding_invoices(company=None, from_date=None, to_date=None):
+def get_outstanding_invoices(company=None, from_date=None, to_date=None, mode_of_payment=None):
     """
     Outstanding payables for every supplier in the company — Purchase Invoices,
     Journal Entries credited to a payable account, *and* any credit against
@@ -18,20 +18,33 @@ def get_outstanding_invoices(company=None, from_date=None, to_date=None):
     ERPNext's own reconciliation helper, so this matches what Accounts
     Payable reports show. Credits come back with a negative outstanding_amount
     so they can be applied against what's being paid.
+
+    Filtering by mode_of_payment matters for performance, not just correctness:
+    it narrows the supplier list *before* the expensive per-supplier lookups
+    below run, instead of after. Without it, every supplier with any
+    outstanding balance gets checked, regardless of how they're actually paid.
     """
     if not company:
         frappe.throw(_("Please select a Company."))
 
-    suppliers_with_balance = frappe.db.sql("""
-        SELECT party
-        FROM `tabPayment Ledger Entry`
-        WHERE party_type = 'Supplier'
-          AND account_type = 'Payable'
-          AND company = %s
-          AND delinked = 0
-        GROUP BY party
-        HAVING ABS(SUM(amount_in_account_currency)) > 0.005
-    """, company, as_dict=True)
+    filters = {"company": company}
+    join = ""
+    if mode_of_payment:
+        join = "INNER JOIN `tabSupplier` s ON s.name = ple.party"
+        filters["mode_of_payment"] = mode_of_payment
+
+    suppliers_with_balance = frappe.db.sql(f"""
+        SELECT ple.party AS party
+        FROM `tabPayment Ledger Entry` ple
+        {join}
+        WHERE ple.party_type = 'Supplier'
+          AND ple.account_type = 'Payable'
+          AND ple.company = %(company)s
+          AND ple.delinked = 0
+          {"AND s.default_mode_of_payment = %(mode_of_payment)s" if mode_of_payment else ""}
+        GROUP BY ple.party
+        HAVING ABS(SUM(ple.amount_in_account_currency)) > 0.005
+    """, filters, as_dict=True)
 
     supplier_map = {}
 
@@ -384,6 +397,13 @@ def _create_payment_entries(pr):
     for supplier, items in supplier_invoices.items():
         try:
             supplier_doc = frappe.get_doc("Supplier", supplier)
+            mode_of_payment = supplier_doc.get("default_mode_of_payment")
+            if not mode_of_payment:
+                frappe.throw(_(
+                    "Supplier {0} has no Default Mode of Payment set. "
+                    "Set one on the Supplier record before including them in a Payment Run."
+                ).format(supplier))
+
             paid_to_account = get_party_account(supplier, pr.company)
 
             paid_from_currency = frappe.get_cached_value(
@@ -405,7 +425,7 @@ def _create_payment_entries(pr):
             pe.payment_type             = "Pay"
             pe.posting_date             = pr.payment_date
             pe.company                  = pr.company
-            pe.mode_of_payment          = "EFT"
+            pe.mode_of_payment          = mode_of_payment
             pe.party_type               = "Supplier"
             pe.party                    = supplier
             pe.party_name               = supplier_doc.supplier_name
@@ -477,7 +497,13 @@ def get_party_account(supplier, company):
 
 @frappe.whitelist()
 def export_ach_file(payment_run_name):
-    """Manual re-export from the Payment Run form."""
+    """
+    Generate (or re-generate) the CPA 005 ACH file for a Payment Run.
+    Always an explicit, manually-triggered action — never automatic on
+    submit — since a Payment Run may include suppliers paid by other means
+    (Wire, etc), and even a purely-EFT run shouldn't silently attempt a bank
+    export the moment it's submitted.
+    """
     pr = frappe.get_doc("Payment Run", payment_run_name)
     if pr.status not in ("Submitted", "Exported"):
         frappe.throw(_("Payment Run must be Submitted before exporting."))
@@ -485,13 +511,18 @@ def export_ach_file(payment_run_name):
     frappe.db.set_value("Payment Run", payment_run_name, "status", "Exported")
     frappe.db.commit()
     return result
- 
+
 def _generate_ach_file(payment_run_name):
     pr = frappe.get_doc("Payment Run", payment_run_name)
     settings = frappe.get_single("EFT Settings")
 
     if not settings.originator_id:
         frappe.throw(_("Please configure EFT Settings before exporting."))
+
+    if not settings.mode_of_payment:
+        frappe.throw(_(
+            "Please set the EFT Mode of Payment in EFT Settings before exporting."
+        ))
 
     # Increment file creation number — uncomment when done testing
     fcn = int(settings.file_creation_number or 0) + 1
@@ -502,14 +533,24 @@ def _generate_ach_file(payment_run_name):
     fcn_str         = str(fcn).zfill(4)
     # fcn_str = "TEST"
 
+    # Only Payment Entries actually on the EFT rail go into this file — a
+    # Payment Run can mix suppliers paid by different modes, and this export
+    # only ever produces a CPA 005 / RBC-format ACH file.
     payment_entries = frappe.get_all(
         "Payment Entry",
-        filters={"payment_run": payment_run_name, "docstatus": 1},
+        filters={
+            "payment_run": payment_run_name,
+            "docstatus": 1,
+            "mode_of_payment": settings.mode_of_payment,
+        },
         fields=["name", "party", "party_name", "paid_amount", "posting_date"]
     )
 
     if not payment_entries:
-        frappe.throw(_("No submitted Payment Entries found for this Payment Run."))
+        frappe.throw(_(
+            "No submitted Payment Entries with Mode of Payment {0} were found "
+            "for this Payment Run."
+        ).format(settings.mode_of_payment))
 
     today         = pr.payment_date
     julian_date   = "0" + today.strftime("%y%j")   # 0YYDDD (6 chars)

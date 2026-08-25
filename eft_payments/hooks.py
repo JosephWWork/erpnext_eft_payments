@@ -13,7 +13,7 @@ doc_events = {
 }
 
 fixtures = [
-    {"dt": "Custom Field", "filters": [["dt", "in", ["Payment Entry"]]]},
+    {"dt": "Custom Field", "filters": [["dt", "in", ["Payment Entry", "Supplier"]]]},
     {"dt": "Property Setter", "filters": [["doc_type", "in", ["Payment Entry"]]]},
     {"dt": "Print Format", "filters": [["module", "in", ["Eft Payments"]]]},
 ]

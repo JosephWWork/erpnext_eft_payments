@@ -29,6 +29,20 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
         change() { load_invoices(); }
     });
 
+    // Optional — but narrows the supplier list before the expensive
+    // per-supplier lookups run server-side, instead of after. Leave blank
+    // to check every supplier with a balance (slower, especially with
+    // hundreds of suppliers); set it to only check suppliers whose Default
+    // Mode of Payment matches (e.g. just your Wire suppliers).
+    let mode_of_payment_field = page.add_field({
+        fieldname: 'mode_of_payment',
+        label: 'Mode of Payment',
+        fieldtype: 'Link',
+        options: 'Mode of Payment',
+        description: 'Optional — narrows the search to suppliers with this Default Mode of Payment. Speeds up loading a lot.',
+        change() { load_invoices(); }
+    });
+
     let bank_account_field = page.add_field({
         fieldname: 'bank_account',
         label: 'Pay From Bank Account',
@@ -97,9 +111,10 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
 
     // ── Load invoices ─────────────────────────────────────────────
     function load_invoices() {
-        let company   = company_field.get_value();
-        let from_date = from_date_field.get_value();
-        let to_date   = to_date_field.get_value();
+        let company         = company_field.get_value();
+        let from_date       = from_date_field.get_value();
+        let to_date         = to_date_field.get_value();
+        let mode_of_payment = mode_of_payment_field.get_value();
 
         $body.find('.invoice-table-wrapper').html(
             '<p class="text-muted" style="padding:20px;">Loading...</p>'
@@ -107,7 +122,7 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
 
         frappe.call({
             method: 'eft_payments.eft_payments.page.payment_run_wizard.payment_run_wizard.get_outstanding_invoices',
-            args: { company, from_date, to_date },
+            args: { company, from_date, to_date, mode_of_payment },
             callback: function(r) {
                 all_supplier_data = r.message || [];
                 selected_invoices = {};

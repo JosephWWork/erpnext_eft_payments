@@ -7,21 +7,15 @@ class PaymentRun(Document):
 
     def on_submit(self):
         from eft_payments.eft_payments.page.payment_run_wizard.payment_run_wizard import (
-            _generate_ach_file,
             _create_payment_entries
         )
 
-        # Create one Payment Entry per supplier
+        # Create one Payment Entry per supplier. Generating an ACH file is a
+        # separate, explicit step (see export_ach_file) — not every Payment
+        # Run is EFT, and even for the ones that are, submission shouldn't
+        # silently attempt a bank export.
         _create_payment_entries(self)
-
-        # Generate and attach the ACH file
-        try:
-            _generate_ach_file(self.name)
-            frappe.db.set_value("Payment Run", self.name, "status", "Exported")
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "ACH Generation Failed on Submit")
-            frappe.db.set_value("Payment Run", self.name, "status", "Submitted")
-
+        frappe.db.set_value("Payment Run", self.name, "status", "Submitted")
         frappe.db.commit()
 
     def before_cancel(self):

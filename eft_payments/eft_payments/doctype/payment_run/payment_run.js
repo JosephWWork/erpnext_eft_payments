@@ -7,11 +7,19 @@ frappe.ui.form.on('Payment Run', {
     
     refresh(frm) {
 
-        // ── Re-export ACH (already exported runs) ─────────────────
-        if (frm.doc.status === 'Exported' && frm.doc.docstatus === 1) {
-            frm.add_custom_button(__('Re-export ACH File'), function() {
+        // ── Generate / re-export ACH file ──────────────────────────
+        // Always an explicit action, never automatic on submit — a run may
+        // include suppliers paid by modes other than EFT, and export only
+        // ever includes Payment Entries on the Mode of Payment configured
+        // in EFT Settings.
+        if ((frm.doc.status === 'Submitted' || frm.doc.status === 'Exported') && frm.doc.docstatus === 1) {
+            let already_exported = frm.doc.status === 'Exported';
+            let label = already_exported ? __('Re-export ACH File') : __('Generate ACH File');
+            frm.add_custom_button(label, function() {
                 frappe.confirm(
-                    'Re-generate and download the CPA 005 ACH file?',
+                    already_exported
+                        ? 'Re-generate and download the CPA 005 ACH file?'
+                        : 'Generate the CPA 005 ACH file for this Payment Run\'s EFT-mode payments?',
                     function() {
                         frappe.call({
                             method: 'eft_payments.eft_payments.page.payment_run_wizard.payment_run_wizard.export_ach_file',
@@ -35,7 +43,10 @@ frappe.ui.form.on('Payment Run', {
         }
 
         // ── Send Remittance Emails ────────────────────────────────
-        if (frm.doc.status === 'Exported' && frm.doc.docstatus === 1) {
+        // Not EFT-specific — a Wire (or any other mode) Payment Run stays at
+        // "Submitted" forever since it never goes through ACH export, but its
+        // suppliers still need remittance advice.
+        if ((frm.doc.status === 'Submitted' || frm.doc.status === 'Exported') && frm.doc.docstatus === 1) {
             frm.add_custom_button(__('Send Remittance Emails'), function() {
 
                 // Let them choose the print format
