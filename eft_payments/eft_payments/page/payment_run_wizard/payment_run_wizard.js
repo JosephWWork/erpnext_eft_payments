@@ -29,17 +29,20 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
         change() { load_invoices(); }
     });
 
-    // Optional — but narrows the supplier list before the expensive
-    // per-supplier lookups run server-side, instead of after. Leave blank
-    // to check every supplier with a balance (slower, especially with
-    // hundreds of suppliers); set it to only check suppliers whose Default
-    // Mode of Payment matches (e.g. just your Wire suppliers).
+    // Narrows the supplier list before the expensive per-supplier lookups
+    // run server-side, instead of after — leaving it blank checks every
+    // supplier with a balance (slower, especially with hundreds of
+    // suppliers). It's not required just to browse, but it IS required to
+    // create a Payment Run: it's what decides which payment method every
+    // Payment Entry in the run uses, so there has to be one definite answer
+    // before anything gets created.
     let mode_of_payment_field = page.add_field({
         fieldname: 'mode_of_payment',
         label: 'Mode of Payment',
         fieldtype: 'Link',
         options: 'Mode of Payment',
-        description: 'Optional — narrows the search to suppliers with this Default Mode of Payment. Speeds up loading a lot.',
+        reqd: 1,
+        description: 'Narrows the search to suppliers with this Default Mode of Payment (speeds up loading a lot), and is used for every Payment Entry created from this run. Required before creating a Payment Run.',
         change() { load_invoices(); }
     });
 
@@ -469,8 +472,15 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
             supplier_totals[i.supplier] = (supplier_totals[i.supplier] || 0) + (parseFloat(i.pay_amount) || 0);
         });
         let negative_suppliers = Object.keys(supplier_totals).filter(s => supplier_totals[s] <= 0.005);
+        let no_mode_of_payment = !mode_of_payment_field.get_value();
 
         let warning = '';
+        if (no_mode_of_payment) {
+            warning += `<div style="color:#c0392b; font-size:12px; margin-top:4px;">
+                 ⚠ Select a Mode of Payment above before creating the Payment Run —
+                 it decides which payment method the Payment Entries use.
+               </div>`;
+        }
         if (zero_amounts.length) {
             warning += `<div style="color:#c0392b; font-size:12px; margin-top:4px;">
                  ⚠ ${zero_amounts.length} row(s) have a $0 pay amount —
@@ -493,19 +503,24 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
             Total: <strong>${fmt(total)}</strong>
             ${warning}
         `);
-        $body.find('.btn-create-run').prop('disabled', zero_amounts.length > 0 || negative_suppliers.length > 0);
+        $body.find('.btn-create-run').prop('disabled', zero_amounts.length > 0 || negative_suppliers.length > 0 || no_mode_of_payment);
         $body.find('.payment-run-footer').show();
     }
 
     // ── Create payment run ────────────────────────────────────────
     $body.find('.btn-create-run').on('click', function() {
-        let bank_account = bank_account_field.get_value();
-        let payment_date = payment_date_field.get_value();
-        let company      = company_field.get_value();
+        let bank_account     = bank_account_field.get_value();
+        let payment_date     = payment_date_field.get_value();
+        let company          = company_field.get_value();
+        let mode_of_payment  = mode_of_payment_field.get_value();
 
-        if (!bank_account) { frappe.msgprint('Please select a Bank Account.');  return; }
-        if (!payment_date) { frappe.msgprint('Please select a Payment Date.');  return; }
-        if (!company)      { frappe.msgprint('Please select a Company.');        return; }
+        if (!bank_account)     { frappe.msgprint('Please select a Bank Account.');      return; }
+        if (!payment_date)     { frappe.msgprint('Please select a Payment Date.');      return; }
+        if (!company)          { frappe.msgprint('Please select a Company.');            return; }
+        if (!mode_of_payment)  {
+            frappe.msgprint('Please select a Mode of Payment — it’s needed to know which payment method to use when the Payment Entries are created.');
+            return;
+        }
 
         let items          = Object.values(selected_invoices);
         let supplier_count = new Set(items.map(i => i.supplier)).size;
@@ -531,6 +546,7 @@ frappe.pages['payment-run-wizard'].on_page_load = function(wrapper) {
                         company,
                         bank_account,
                         payment_date,
+                        mode_of_payment,
                         selected_invoices: JSON.stringify(items)
                     },
                     callback: function(r) {

@@ -159,10 +159,17 @@ def get_negative_outstanding_journal_entries(party, party_account, company):
 
 
 @frappe.whitelist()
-def create_payment_run(company, bank_account, payment_date, selected_invoices):
+def create_payment_run(company, bank_account, payment_date, mode_of_payment, selected_invoices):
     import json
     if isinstance(selected_invoices, str):
         selected_invoices = json.loads(selected_invoices)
+
+    if not mode_of_payment:
+        frappe.throw(_(
+            "Please select a Mode of Payment before creating the Payment Run — "
+            "it's needed to know which payment method to use when the Payment "
+            "Entries are created."
+        ))
 
     # Validate and group by supplier first — a credit that fully offsets (or
     # exceeds) one supplier's selected invoices should exclude just that
@@ -200,12 +207,24 @@ def create_payment_run(company, bank_account, payment_date, selected_invoices):
     pr.company = company
     pr.bank_account = bank_account
     pr.payment_date = payment_date
+    pr.mode_of_payment = mode_of_payment
     pr.status = "Draft"
 
     total = 0
     skipped_suppliers = []
 
     for supplier, items in by_supplier.items():
+        # Defense in depth: the wizard only lists suppliers whose Default Mode
+        # of Payment already matches what was picked, and re-loading always
+        # clears the current selection — but guard against stale client state
+        # or a direct API call anyway, since this decides how the money moves.
+        supplier_default = frappe.db.get_value("Supplier", supplier, "default_mode_of_payment")
+        if supplier_default and supplier_default != mode_of_payment:
+            frappe.throw(_(
+                "Supplier {0}'s Default Mode of Payment ({1}) doesn't match "
+                "the Mode of Payment selected for this run ({2})."
+            ).format(supplier, supplier_default, mode_of_payment))
+
         supplier_total = sum(i["amount"] for i in items)
         if supplier_total <= 0.005:
             skipped_suppliers.append(supplier)
@@ -385,6 +404,15 @@ def _create_payment_entries(pr):
 
     company_currency = frappe.get_cached_value("Company", pr.company, "default_currency")
 
+    # Every Payment Entry in this run uses the Payment Run's own Mode of
+    # Payment — set once, up front, when the run was created — rather than
+    # each supplier's Default Mode of Payment, which is only a search filter
+    # and could in principle change after the run was created.
+    if not pr.mode_of_payment:
+        frappe.throw(_(
+            "This Payment Run has no Mode of Payment set. Please set one before submitting."
+        ))
+
     # Group items by supplier
     supplier_invoices = defaultdict(list)
     for item in pr.items:
@@ -397,13 +425,6 @@ def _create_payment_entries(pr):
     for supplier, items in supplier_invoices.items():
         try:
             supplier_doc = frappe.get_doc("Supplier", supplier)
-            mode_of_payment = supplier_doc.get("default_mode_of_payment")
-            if not mode_of_payment:
-                frappe.throw(_(
-                    "Supplier {0} has no Default Mode of Payment set. "
-                    "Set one on the Supplier record before including them in a Payment Run."
-                ).format(supplier))
-
             paid_to_account = get_party_account(supplier, pr.company)
 
             paid_from_currency = frappe.get_cached_value(
@@ -425,7 +446,7 @@ def _create_payment_entries(pr):
             pe.payment_type             = "Pay"
             pe.posting_date             = pr.payment_date
             pe.company                  = pr.company
-            pe.mode_of_payment          = mode_of_payment
+            pe.mode_of_payment          = pr.mode_of_payment
             pe.party_type               = "Supplier"
             pe.party                    = supplier
             pe.party_name               = supplier_doc.supplier_name
@@ -466,6 +487,11 @@ def _create_payment_entries(pr):
             for item in items:
                 item.payment_entry = pe.name
 
+        except frappe.ValidationError:
+            # A deliberate, specific throw (ours or ERPNext's own, e.g. from
+            # get_party_account or pe.submit()) — let the real message
+            # through instead of burying it behind a generic one below.
+            raise
         except Exception:
             frappe.log_error(
                 frappe.get_traceback(),
